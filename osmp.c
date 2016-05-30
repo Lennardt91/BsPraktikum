@@ -57,6 +57,8 @@ int OSMP_Init (int *argc, char ***argv)
 
 int OSMP_Size (int *size)
 {
+    if (*size<0)
+      return OSMP_ERROR;
     shm_header *shmhead = shm_ptr;
     *size=shmhead->size;
     return OSMP_SUCCESS;

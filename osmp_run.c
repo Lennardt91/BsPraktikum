@@ -64,7 +64,7 @@ int main (int argc, char *argv[]){
     
     // warten auf Kindprozesse
     for(i = 0; i<child_process_count; i++){
-        if( (waitpid(child_pid[i],NULL,WCONTINUED) == -1 ){
+        if( (waitpid(child_pid[i],NULL,WCONTINUED) == -1) ){
 	perror("waitpid() error");
 	exit(OSMP_ERROR);
 	}
