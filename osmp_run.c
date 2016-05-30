@@ -64,7 +64,10 @@ int main (int argc, char *argv[]){
     
     // warten auf Kindprozesse
     for(i = 0; i<child_process_count; i++){
-        waitpid(child_pid[i],NULL,WCONTINUED);//TODO:wait() bzw waitpid(-1,... Rückgabe
+        if( (waitpid(child_pid[i],NULL,WCONTINUED) == -1 ){
+	perror("waitpid() error");
+	exit(OSMP_ERROR);
+	}
     }
     
     // shm löschen
@@ -74,7 +77,7 @@ int main (int argc, char *argv[]){
     }
     
     printf("ende\n");
-    return 0;
+    return OSMP_SUCCESS;
 }
 
 pid_t createChild(char *childArgv[]){
