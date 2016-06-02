@@ -48,6 +48,9 @@ int main (int argc, char *argv[]){
     for(i=0;i<OSMP_MAX_SLOTS;i++)
 	shm_ptr->msg_num[i]=i;
     
+        
+    // einrichten der semaphore
+    int semid = semget(shm_key, child_process_count+1, IPC_CREAT | 0640);
     
     // starten der Kindprozesse
     for(i = 0; i<child_process_count; i++){
@@ -69,6 +72,9 @@ int main (int argc, char *argv[]){
 	exit(OSMP_ERROR);
 	}
     }
+    
+    // semaphore löschen
+    semctl(semid,0,IPC_RMID);
     
     // shm löschen
     if(shmctl(shm_id,IPC_RMID,NULL)==-1){
