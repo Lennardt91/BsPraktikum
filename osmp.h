@@ -9,11 +9,11 @@
 #include <sys/wait.h>
 #include <sys/ipc.h>
 #include <sys/shm.h>
+#include <sys/sem.h>
 #include <stdio.h>
 #include <errno.h>
 #include <string.h>
 #include <stdlib.h>
-
 /*
  * Define Return Values
  */
@@ -32,23 +32,22 @@
 typedef struct{
     int source;
     int size;
+    int next;
     char msg[OSMP_MAX_PAYLOAD_LENGTH];
 } shm_msg;
 
 typedef struct{
     pid_t pid;
-    int send_msg;
-    int rcv_msg;
-    int rcv_msg_num[OSMP_MAX_MESSAGES_PROC+1];
+    int rcv_queue_start;
+    int rcv_queue_end;
 } shm_child_block;
 
 typedef struct{
     int size;
-    int free_msg;
-    int closed_msg;
-    int msg_num[OSMP_MAX_SLOTS+1];
-    shm_msg msg[OSMP_MAX_SLOTS];
-    shm_child_block child_block[];
+    int free_queue_start;
+    int free_queue_end;
+    int msg_offset;
+    int cb_offset;
 } shm_header;
 
 /*
