@@ -8,16 +8,18 @@
  *
  */
 #include "osmp.h"
-
-int child_msg_inc(int num){
-    return num<OSMP_MAX_MESSAGES_PROC ? num++ : 0;
-}
-
-int msg_inc(int num){
-    return num<OSMP_MAX_SLOTS ? num++ : 0;
-}
+#include "osmp_sem.h"
 int Rank=-1;
 void *shm_ptr=NULL;
+#define MS 0
+#define S0 1
+int sem_recv(int rank){
+    return rank*2+2;
+}
+
+int sem_send(int rank){
+    return rank*2+3;
+}
 
 int OSMP_Init (int *argc, char ***argv)
 {
@@ -31,8 +33,13 @@ int OSMP_Init (int *argc, char ***argv)
         perror("ftok error");
         return OSMP_ERROR;
     }
+    
+    
+    // einrichten der semaphore
+    osmp_sem_init(shm_key);
+    
     // shm einrichten
-    int shm_id =shmget(shm_key,OSMP_SHM_SIZE,IPC_PRIVATE);//?
+    int shm_id =shmget(shm_key,0,IPC_PRIVATE);//?
     if(shm_id==-1){
         perror("shmget error");
         return OSMP_ERROR;
@@ -43,22 +50,19 @@ int OSMP_Init (int *argc, char ***argv)
         return OSMP_ERROR;
     }
     shm_header *shmhead = shm_ptr;
+    shm_child_block *shm_cb = shm_ptr + shmhead->cb_offset;
     pid_t pid = getpid();
     int i;
     for(i=0;i<shmhead->size;i++)
-        if(pid==shmhead->child_block[i].pid){
+        if(pid==shm_cb[i].pid){
             Rank=i;
             break;
         }
-        
-    
     return OSMP_SUCCESS;
 }
 
 int OSMP_Size (int *size)
 {
-    if (*size<0)
-      return OSMP_ERROR;
     shm_header *shmhead = shm_ptr;
     *size=shmhead->size;
     return OSMP_SUCCESS;
@@ -75,48 +79,90 @@ int OSMP_Rank (int *rank)
 
 int OSMP_Send (const void *buf, int count, int dest)
 {
-    if(count>OSMP_MAX_PAYLOAD_LENGTH || count <= 0)
-	return OSMP_ERROR;
     shm_header *shmhead = shm_ptr;
-    if(shmhead->free_msg==shmhead->closed_msg){
+    if(buf==NULL || count < 1 || dest >= shmhead->size)
         return OSMP_ERROR;
+    osmp_sem_wait(sem_send(dest));
+    osmp_sem_wait(S0);
+    osmp_sem_wait(MS);
+    //Slot holen
+    int offset = shmhead->free_queue_start;
+    if(shmhead->free_queue_end == offset)
+        shmhead->free_queue_end = -1;
+    shm_msg *shm_ms = shm_ptr + offset;
+    shmhead->free_queue_start = shm_ms->next;
+    
+    osmp_sem_signal(MS);
+    //Narchicht kopieren
+    shm_ms->source=Rank;
+    shm_ms->size=count;
+    shm_ms->next=-1;
+    char *msg = (char*)&(shm_ms->msg);
+    int i;
+    for(i=0;i<count;i++)
+        msg[i]=((char*)buf)[i];
+    
+    osmp_sem_wait(MS);
+    //Slot in Recv
+    shm_child_block *shm_cb = shm_ptr + shmhead->cb_offset;
+    if(shm_cb[dest].rcv_queue_end != -1){
+        shm_msg *shm_ms_last = shm_ptr + shm_cb[dest].rcv_queue_end;
+        shm_ms_last->next = offset;
     }
-    if(child_msg_inc(shmhead->child_block[dest].send_msg)==shmhead->child_block[dest].rcv_msg){
-        return OSMP_ERROR;
-    }
+    shm_cb[dest].rcv_queue_end = offset;
+    if(shm_cb[dest].rcv_queue_start == -1)
+        shm_cb[dest].rcv_queue_start = offset;
     
-    int i=shmhead->msg_num[shmhead->free_msg];
-    
-    shmhead->free_msg=msg_inc(shmhead->free_msg);
-    
-    shmhead->child_block[dest].rcv_msg_num[shmhead->child_block[dest].send_msg]=i;
-    shmhead->child_block[dest].send_msg=child_msg_inc(shmhead->child_block[dest].send_msg);
-    shmhead->msg[i].source=Rank;
-    shmhead->msg[i].size=count;
-    int d;
-    for(d=0;d<count;d++)
-	shmhead->msg[i].msg[d]=((char*)buf)[d];
-    
+    osmp_sem_signal(MS);
+    osmp_sem_signal(sem_recv(dest));
     return OSMP_SUCCESS;
 }
 
 int OSMP_Recv (void *buf, int count, int *source, int *len)
 {
+    osmp_sem_wait(sem_recv(Rank));
+    osmp_sem_wait(MS);
+    //Slot holen
     shm_header *shmhead = shm_ptr;
-    if(shmhead->child_block[Rank].send_msg==shmhead->child_block[Rank].rcv_msg){
+    shm_child_block *shm_cb = shm_ptr + shmhead->cb_offset;
+    int offset = shm_cb[Rank].rcv_queue_start;
+    shm_msg *shm_ms = shm_ptr + offset;
+    if(count < shm_ms->size){
+        osmp_sem_signal(sem_recv(Rank));
+        osmp_sem_signal(MS);
+        *len = shm_ms->size;
         return OSMP_ERROR;
     }
-    int i=shmhead->child_block[Rank].rcv_msg_num[shmhead->child_block[Rank].rcv_msg];
+    if(shm_cb[Rank].rcv_queue_end == offset)
+        shm_cb[Rank].rcv_queue_end=-1;
+    shm_cb[Rank].rcv_queue_start = shm_ms->next;
     
-    shmhead->child_block[Rank].rcv_msg=child_msg_inc(shmhead->child_block[Rank].rcv_msg);
+    osmp_sem_signal(MS);
+    //kopieren
+    shm_ms->next=-1;
+    *source = shm_ms->source;
+    *len = shm_ms->size;
+    char *msg = (char*)&(shm_ms->msg);
+    int i;
+    for(i=0;i<*len;i++)
+        ((char*)buf)[i]=msg[i];
     
-    *source=shmhead->msg[i].source;
-    *len=shmhead->msg[i].size;
-    int d;
-    for(d=0;d<count;d++)
-	((char*)buf)[d] = shmhead->msg[i].msg[d];
-    shmhead->msg_num[shmhead->closed_msg]=i;
-    shmhead->closed_msg=msg_inc(shmhead->closed_msg);
+    
+    osmp_sem_wait(MS);
+    //Slot zurückgeben
+    if(shmhead->free_queue_end != -1){
+        shm_msg *shm_ms_last = shm_ptr + shmhead->free_queue_end;
+        shm_ms_last->next=offset;
+    }
+    else{
+        shmhead->free_queue_start = offset;
+    }
+    shmhead->free_queue_end = offset;
+
+    
+    osmp_sem_signal(MS);
+    osmp_sem_signal(sem_send(Rank));
+    osmp_sem_signal(S0);
     return OSMP_SUCCESS;
 }
 
